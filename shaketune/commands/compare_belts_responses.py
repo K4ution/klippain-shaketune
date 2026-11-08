@@ -163,4 +163,4 @@ def compare_belts_responses(gcmd, klipper_config, st_process: ShakeTuneProcess) 
     creator.define_output_target(filename)
     measurements_manager.save_stdata()
     st_process.run(filename)
-    st_process.wait_for_completion()\n
+    st_process.wait_for_completion()

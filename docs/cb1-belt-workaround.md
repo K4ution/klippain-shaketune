@@ -57,4 +57,4 @@ belt test, before any intermediate save, this particular change may not help.
 Retain `klippy.log` and the full error message for further diagnosis.
 
 To undo only this workaround, revert the fork's workaround commit with
-`git revert <commit-sha>`, then restart Klipper. This preserves other local commits.\n
+`git revert <commit-sha>`, then restart Klipper. This preserves other local commits.

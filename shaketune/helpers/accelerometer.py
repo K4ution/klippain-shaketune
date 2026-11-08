@@ -373,4 +373,4 @@ class Accelerometer:
                 'This might be due to slow hardware or a busy system.'
             )
 
-        self._samples_ready = False\n
+        self._samples_ready = False
