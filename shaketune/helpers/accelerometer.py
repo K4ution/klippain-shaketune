@@ -16,12 +16,12 @@ import os
 import time
 import uuid
 from io import TextIOWrapper
-from multiprocessing import Process, Queue, Value
+from multiprocessing import Event, Process, Queue, Value
 from pathlib import Path
 from typing import List, Optional, Tuple, TypedDict
 
 import numpy as np
-from zstandard import FLUSH_FRAME, ZstdCompressor, ZstdDecompressor
+from zstandard import FLUSH_BLOCK, FLUSH_FRAME, ZstdCompressor, ZstdDecompressor
 
 from ..helpers.console_output import ConsoleOutput
 
@@ -29,6 +29,7 @@ Sample = Tuple[float, float, float, float]
 SamplesList = List[Sample]
 
 STOP_SENTINEL = 'STOP_SENTINEL'
+FLUSH_SENTINEL = 'FLUSH_SENTINEL'
 WRITE_TIMEOUT = 300
 WAIT_FOR_SAMPLE_TIMEOUT = 30
 COMPRESSION_LEVEL = 11  # Zstandard compression level (0 to 22, higher is slower but better compression)
@@ -60,11 +61,12 @@ class MeasurementsManager:
         # Create a dedicated process with a Queue to manage all the writing operations
         self._writer_queue = Queue()
         self._is_writing = Value('b', False)
+        self._flush_complete = Event()
         self._writer_process: Optional[Process] = None
 
     # Dedicated writer process: opens the output file in binary write mode and wraps it with a Zstandard compressor
     # stream. It then continuously reads measurement objects from the queue and writes each as a JSON line
-    def _writer_loop(self, output_file: Path, write_queue: Queue, is_writing: Value):
+    def _writer_loop(self, output_file: Path, write_queue: Queue, is_writing: Value, flush_complete):
         try:
             with open(output_file, 'wb') as f:
                 cctx = ZstdCompressor(level=COMPRESSION_LEVEL)
@@ -73,6 +75,12 @@ class MeasurementsManager:
                         meas = write_queue.get()
                         if meas == STOP_SENTINEL:
                             break
+                        if meas == FLUSH_SENTINEL:
+                            # FIFO barrier: all preceding measurements have been serialized and
+                            # compressed. A queue.empty() check alone cannot guarantee this.
+                            compressor.flush(FLUSH_BLOCK)
+                            flush_complete.set()
+                            continue
                         with is_writing.get_lock():
                             is_writing.value = True
                         line = (json.dumps(meas) + '\n').encode('utf-8')
@@ -100,7 +108,7 @@ class MeasurementsManager:
         if self._writer_process is None:
             self._writer_process = Process(
                 target=self._writer_loop,
-                args=(self._temp_file, self._writer_queue, self._is_writing),
+                args=(self._temp_file, self._writer_queue, self._is_writing, self._flush_complete),
                 daemon=False,
             )
             self._writer_process.start()
@@ -139,6 +147,31 @@ class MeasurementsManager:
         for meas in flush_list:
             self._writer_queue.put(meas)
         self.clear_measurements(keep_last=True)
+
+    def flush_completed_measurements(self, timeout: float = WRITE_TIMEOUT):
+        """Release completed recordings and wait cooperatively until the writer is idle.
+
+        Call only after recording has stopped: unlike _flush_chunk(), this also
+        releases the last measurement. The writer stays open for the next recording,
+        so save_stdata() still produces one file containing all the measurements.
+        """
+        if self._k_reactor is None or self._writer_process is None:
+            raise ValueError('a Klipper reactor and an active writer are required to flush measurements!')
+
+        self._flush_complete.clear()
+        for meas in self.measurements:
+            self._writer_queue.put(meas)
+        self.clear_measurements()
+        self._writer_queue.put(FLUSH_SENTINEL)
+
+        eventtime = self._k_reactor.monotonic()
+        endtime = eventtime + timeout
+        while not self._flush_complete.is_set():
+            if not self._writer_process.is_alive():
+                raise RuntimeError('Shake&Tune measurement writer exited before completing the flush!')
+            if eventtime >= endtime:
+                raise TimeoutError('Shake&Tune timed out waiting for completed measurements to be written!')
+            eventtime = self._k_reactor.pause(eventtime + 0.05)
 
     def save_stdata(self, timeout: int = WRITE_TIMEOUT):
         # Klipper reactor is required to save the data to disk (but optional for the CLI mode that never saves any .stdata)
@@ -340,4 +373,4 @@ class Accelerometer:
                 'This might be due to slow hardware or a busy system.'
             )
 
-        self._samples_ready = False
+        self._samples_ready = False\n

@@ -117,38 +117,44 @@ def compare_belts_responses(gcmd, klipper_config, st_process: ShakeTuneProcess) 
     filename = creator.get_folder() / f'{creator.get_type().replace(" ", "")}_{date}'
     measurements_manager = MeasurementsManager(st_process.get_st_config().chunk_size, printer.get_reactor(), filename)
 
-    # Run the test for each axis
-    for config in filtered_config:
-        toolhead.manual_move(point, feedrate_travel)
-        toolhead.dwell(0.5)
-        toolhead.wait_moves()
+    try:
+        # Run the test for each axis
+        for config in filtered_config:
+            toolhead.manual_move(point, feedrate_travel)
+            toolhead.dwell(0.5)
+            toolhead.wait_moves()
 
-        ConsoleOutput.print(f'Measuring {config["label"]}...')
-        accelerometer.start_recording(measurements_manager, name=config['label'], append_time=True)
-        test_params = vibrate_axis(
-            toolhead,
-            gcode,
-            config['direction'],
-            min_freq,
-            max_freq,
-            hz_per_sec,
-            accel_per_hz,
-            res_tester,
-            klipper_config,
-        )
-        accelerometer.stop_recording()
-        toolhead.dwell(5)  # Wait 5 seconds to let the printer settle down (needed for low power hosts computers)
-        toolhead.wait_moves()
+            ConsoleOutput.print(f'Measuring {config["label"]}...')
+            accelerometer.start_recording(measurements_manager, name=config['label'], append_time=True)
+            test_params = vibrate_axis(
+                toolhead,
+                gcode,
+                config['direction'],
+                min_freq,
+                max_freq,
+                hz_per_sec,
+                accel_per_hz,
+                res_tester,
+                klipper_config,
+            )
+            accelerometer.stop_recording()
+            toolhead.dwell(5)  # Wait 5 seconds to let the printer settle down (needed for low power hosts computers)
+            toolhead.wait_moves()
 
-    # Re-enable the input shaper if it was active
-    if input_shaper is not None:
-        input_shaper.enable_shaping()
+            # Do not carry the first belt's raw samples into the second resonance test.
+            # Wait for serialization/compression to finish before scheduling more motion.
+            ConsoleOutput.print(f'Saving {config["label"]} measurements before continuing...')
+            measurements_manager.flush_completed_measurements()
+    finally:
+        # Re-enable the input shaper if it was active
+        if input_shaper is not None:
+            input_shaper.enable_shaping()
 
-    # Restore the previous acceleration values
-    if old_mcr is not None:  # minimum_cruise_ratio found: Klipper >= v0.12.0-239
-        gcode.run_script_from_command(f'SET_VELOCITY_LIMIT ACCEL={old_accel} MINIMUM_CRUISE_RATIO={old_mcr}')
-    else:  # minimum_cruise_ratio not found: Klipper < v0.12.0-239
-        gcode.run_script_from_command(f'SET_VELOCITY_LIMIT ACCEL={old_accel}')
+        # Restore the previous acceleration values
+        if old_mcr is not None:  # minimum_cruise_ratio found: Klipper >= v0.12.0-239
+            gcode.run_script_from_command(f'SET_VELOCITY_LIMIT ACCEL={old_accel} MINIMUM_CRUISE_RATIO={old_mcr}')
+        else:  # minimum_cruise_ratio not found: Klipper < v0.12.0-239
+            gcode.run_script_from_command(f'SET_VELOCITY_LIMIT ACCEL={old_accel}')
 
     # Run post-processing
     ConsoleOutput.print('Belts comparative frequency profile generation...')
@@ -157,4 +163,4 @@ def compare_belts_responses(gcmd, klipper_config, st_process: ShakeTuneProcess) 
     creator.define_output_target(filename)
     measurements_manager.save_stdata()
     st_process.run(filename)
-    st_process.wait_for_completion()
+    st_process.wait_for_completion()\n
